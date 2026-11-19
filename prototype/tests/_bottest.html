@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>bott</title>
+<style>body{background:#0b0b0f;color:#ccc;font:12px monospace;margin:0}iframe{width:960px;height:540px;border:0;position:relative}#out{padding:10px;white-space:pre-wrap}</style>
+</head><body>
+<div id="out">running...</div>
+<iframe id="f" src="../wickless.html"></iframe>
+<script>
+const log=[]; const out=document.getElementById("out");
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+
+/* 机器人策略：
+   A "贪"  —— 一直满蜡乱砍，从不剪芯
+   B "苟"  —— 蜡低就剪芯躲避，只在安全时出击
+   比较两者的存活时间与得分，验证"有决策比无脑强" */
+document.getElementById("f").addEventListener("load", async () => {
+  const w=document.getElementById("f").contentWindow;
+  const G=w.__wickless;
+  await sleep(300);
+
+  const runBot = async (mode, ms) => {
+    G.start(); await sleep(50);
+    const t0=performance.now();
+    let attacks=0, trims=0, shiftHeld=false;
+    while (performance.now()-t0 < ms){
+      if (G.S.state!=="play") break;
+      const P=G.P;
+      // 最近敌人
+      let near=null, nd=1e9;
+      for (const e of G.enemies){
+        const d=Math.hypot(e.x-P.x,e.y-P.y);
+        if (d<nd){nd=d;near=e;}
+      }
+      const wantTrim = mode==="greedy" ? false : (P.wax<28);
+      const shift = wantTrim ? "Shift" : "";
+      if (shift) trims++;
+
+      // 移动：贪 -> 冲向敌人；苟 -> 蜡低时拉开距离，否则也上前
+      let dx=0,dy=0;
+      if (near){
+        const ux=(near.x-P.x)/nd, uy=(near.y-P.y)/nd;
+        if (mode==="greedy"){
+          if (nd>58){ dx=ux; dy=uy; }
+        } else {
+          if (P.wax<35 && nd<170){ dx=-ux; dy=-uy; }
+          else if (nd>62){ dx=ux; dy=uy; }
+        }
+      }
+      // 直接注入位置（绕过键盘，避免 aim 抖动影响对比）
+      const sp=(wantTrim?96:186)/60;
+      P.x=Math.max(16,Math.min(944,P.x+dx*sp));
+      P.y=Math.max(16,Math.min(524,P.y+dy*sp));
+      if (near) P.aim=Math.atan2(near.y-P.y,near.x-P.x);
+      // trim 由 update() 从键盘状态推导，必须派发真实事件
+      if (wantTrim && !shiftHeld){ w.dispatchEvent(new w.KeyboardEvent("keydown",{key:"Shift"})); shiftHeld=true; }
+      if (!wantTrim && shiftHeld){ w.dispatchEvent(new w.KeyboardEvent("keyup",{key:"Shift"})); shiftHeld=false; }
+
+      // 攻击：贪 -> 一直砍；苟 -> 只在蜡>50 且敌人在射程内
+      const inRange = near && nd < G.CFG.atkRange*0.85;
+      const shouldAtk = mode==="greedy" ? (near && nd<G.CFG.atkRange*0.9)
+                                        : (inRange && P.wax>50);
+      if (shouldAtk && P.atkCd<=0 && !wantTrim && P.wax>G.CFG.atkCost+1){
+        // 直接调用内部逻辑：用键盘事件
+        w.dispatchEvent(new w.KeyboardEvent("keydown",{key:"j"}));
+        attacks++;
+      }
+      await sleep(16);
+    }
+    if (shiftHeld) w.dispatchEvent(new w.KeyboardEvent("keyup",{key:"Shift"}));
+    return { survived:(performance.now()-t0)/1000, score:G.S.score, kills:G.S.kills,
+             wave:G.S.wave, wax:+G.P.wax.toFixed(1), attacks, trims, state:G.S.state };
+  };
+
+  const g=await runBot("greedy", 60000);
+  const c=await runBot("cautious", 60000);
+
+  const f=n=>n.toFixed(1);
+  log.push("贪  : 存活"+f(g.survived)+"s  分"+g.score+"  杀"+g.kills+"  波"+g.wave+"  攻击"+g.attacks+"  剪芯"+g.trims+"  结束="+g.state);
+  log.push("苟  : 存活"+f(c.survived)+"s  分"+c.score+"  杀"+c.kills+"  波"+c.wave+"  攻击"+c.attacks+"  剪芯"+c.trims+"  结束="+c.state);
+  log.push("");
+  log.push(c.survived > g.survived*1.15 ? "OK   有决策的打法明显活得久（张力成立）"
+        : g.survived > c.survived*1.15 ? "WARN 无脑贪反而活得久（机制反了）"
+        : "WARN 两种打法差异不显著（决策价值不足）");
+  out.textContent=log.join("\n");
+  document.title="BOTDONE";
+});
+</script>
+</body></html>

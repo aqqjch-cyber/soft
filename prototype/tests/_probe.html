@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>probe</title>
+<style>body{background:#0b0b0f;color:#ccc;font:12px monospace;margin:0}iframe{width:960px;height:540px;border:0;position:relative}#out{padding:10px;white-space:pre-wrap}</style>
+</head><body>
+<div id="out">running...</div>
+<iframe id="f" src="../wickless.html"></iframe>
+<script>
+const log=[]; const out=document.getElementById("out");
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+
+/* 探针：测量蜡的真实轨迹。
+   关心三件事：
+   1. 最低蜡 —— 机制有没有被触发（<40 才算触发）
+   2. 时间加权平均蜡 —— 玩家大部分时间处在什么光圈
+   3. 死亡时间 —— 难度曲线是否最终能杀死玩家 */
+document.getElementById("f").addEventListener("load", async () => {
+  const w=document.getElementById("f").contentWindow;
+  const G=w.__wickless;
+  await sleep(300);
+
+  const probe = async (ms, aimError) => {
+    G.start(); await sleep(50);
+    const t0=performance.now();
+    let minWax=100, sumWax=0, n=0, maxEnemies=0, hits=0, lastWax=100, died=null;
+    while (performance.now()-t0 < ms){
+      if (G.S.state!=="play"){ if(died===null) died=(performance.now()-t0)/1000; break; }
+      const P=G.P;
+      let near=null, nd=1e9;
+      for (const e of G.enemies){
+        const d=Math.hypot(e.x-P.x,e.y-P.y);
+        if (d<nd){nd=d;near=e;}
+      }
+      /* 蜡屑优先：蜡低时必须去捡，这就是核心风险决策 */
+      const sh=G.shards;
+      let target=null, td=1e9;
+      for (const s2 of sh){
+        const d=Math.hypot(s2.x-P.x,s2.y-P.y);
+        if (d<td){td=d;target=s2;}
+      }
+      /* 躲暗风：垂直方向侧移，模拟人类闪避 */
+      let dodge=null;
+      for (const b of G.bolts){
+        const bd=Math.hypot(b.x-P.x,b.y-P.y);
+        if (bd<170){ dodge=b; break; }
+      }
+      const wantShard = !dodge && target && (P.wax<72 || td<150);
+      if (dodge){
+        const bx=(P.x-dodge.x), by=(P.y-dodge.y);
+        const bl=Math.hypot(bx,by)||1;
+        const sp=186/60;
+        P.x=Math.max(16,Math.min(944,P.x+(-by/bl)*sp*1.1));
+        P.y=Math.max(16,Math.min(524,P.y+(bx/bl)*sp*1.1));
+      } else if (wantShard){
+        const ux=(target.x-P.x)/td, uy=(target.y-P.y)/td;
+        const sp=186/60;
+        P.x=Math.max(16,Math.min(944,P.x+ux*sp));
+        P.y=Math.max(16,Math.min(524,P.y+uy*sp));
+      } else if (near){
+        const ux=(near.x-P.x)/nd, uy=(near.y-P.y)/nd;
+        if (nd>58){
+          const sp=186/60;
+          P.x=Math.max(16,Math.min(944,P.x+ux*sp));
+          P.y=Math.max(16,Math.min(524,P.y+uy*sp));
+        }
+      }
+      if (near){
+        // 模拟人类瞄准误差
+        P.aim=Math.atan2(near.y-P.y,near.x-P.x)+(Math.random()-0.5)*aimError;
+        if (nd < G.CFG.atkRange*0.9 && P.atkCd<=0 && P.wax>G.CFG.atkCost+1){
+          w.dispatchEvent(new w.KeyboardEvent("keydown",{key:"j"}));
+          hits++;
+        }
+      }
+      minWax=Math.min(minWax,P.wax);
+      sumWax+=P.wax; n++;
+      maxEnemies=Math.max(maxEnemies,G.enemies.length);
+      await sleep(16);
+    }
+    return { minWax:+minWax.toFixed(1), avgWax:+(sumWax/n).toFixed(1),
+             maxEnemies, hits, died, kills:G.S.kills, score:G.S.score, wave:G.S.wave };
+  };
+
+  const fmt=r=>"最低蜡"+r.minWax+"  平均蜡"+r.avgWax+"  最多敌人"+r.maxEnemies+"  击杀"+r.kills+"  波"+r.wave+"  死亡="+(r.died!==null?r.died+"s":"否");
+  const perfect = await probe(90000, 0);
+  const human   = await probe(90000, 0.55);
+  const sloppy  = await probe(90000, 1.05);
+  log.push("完美瞄准 : "+fmt(perfect));
+  log.push("普通玩家 : "+fmt(human));
+  log.push("手残玩家 : "+fmt(sloppy));
+  log.push("");
+  log.push(perfect.minWax < 40 ? "OK   蜡被压到危险区，机制真的在起作用" : "FAIL 蜡未进入危险区("+perfect.minWax+")");
+  log.push(human.died!==null ? "OK   普通玩家会死（"+human.died+"s）" : "WARN 普通玩家也不死，难度偏低");
+  log.push(sloppy.died!==null ? "OK   手残玩家很快会死（"+sloppy.died+"s）" : "WARN 手残玩家不死，难度过低");
+  log.push(human.died!==null && sloppy.died!==null && human.died > sloppy.died
+    ? "OK   技巧有回报：手残死得早，普通玩家撑更久" : "WARN 技巧回报不明显");
+  out.textContent=log.join("\n");
+  document.title="PROBEDONE";
+});
+</script>
+</body></html>
