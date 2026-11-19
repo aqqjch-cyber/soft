@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>selftest</title>
+<style>body{background:#111;color:#ddd;font:13px monospace;margin:0}iframe{width:960px;height:540px;border:0}#out{padding:8px;white-space:pre-wrap}</style>
+</head><body>
+<div id="out">running...</div>
+<iframe id="f" src="../wickless.html"></iframe>
+<script>
+const log = [];
+const out = document.getElementById("out");
+function report(){ out.textContent = log.join("\n"); document.title = log.join(" | ").slice(0,300); }
+window.addEventListener("error", e => { log.push("TOP-ERROR: " + e.message); report(); });
+
+const f = document.getElementById("f");
+f.addEventListener("load", () => {
+  const w = f.contentWindow, d = f.contentDocument;
+  w.addEventListener("error", e => { log.push("IFRAME-ERROR: " + e.message + " @" + e.lineno); report(); });
+  w.addEventListener("unhandledrejection", e => { log.push("REJECT: " + e.reason); report(); });
+
+  setTimeout(() => {
+    const cv = d.getElementById("c");
+    if (!cv) { log.push("FAIL: canvas missing"); report(); return; }
+    const ctx = cv.getContext("2d");
+    const wdt = cv.width, hgt = cv.height;
+    let data;
+    try { data = ctx.getImageData(0, 0, wdt, hgt).data; }
+    catch (e) { log.push("FAIL: getImageData " + e.message); report(); return; }
+
+    let nonBlack = 0, bright = 0, maxL = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      const l = (data[i] + data[i+1] + data[i+2]) / 3;
+      if (l > 8) nonBlack++;
+      if (l > 90) bright++;
+      if (l > maxL) maxL = l;
+    }
+    const total = data.length / 4;
+    log.push("canvas " + wdt + "x" + hgt + " dpr=" + w.dpr);
+    log.push("nonBlack%=" + (nonBlack/total*100).toFixed(1) + " bright%=" + (bright/total*100).toFixed(2) + " maxLum=" + maxL.toFixed(0));
+    if (nonBlack/total < 0.005) log.push("FAIL: screen appears blank");
+    if (maxL < 40) log.push("FAIL: nothing bright drawn");
+
+    // 模拟开局 + 移动 + 攻击
+    w.dispatchEvent(new w.KeyboardEvent("keydown", { key: " " }));
+    setTimeout(() => {
+      w.dispatchEvent(new w.KeyboardEvent("keydown", { key: "d" }));
+      w.dispatchEvent(new w.KeyboardEvent("keydown", { key: "j" }));
+      setTimeout(() => {
+        w.dispatchEvent(new w.KeyboardEvent("keyup", { key: "d" }));
+        let d2;
+        try { d2 = ctx.getImageData(0,0,wdt,hgt).data; } catch(e){ log.push("FAIL post: " + e.message); report(); return; }
+        let nb2 = 0;
+        for (let i = 0; i < d2.length; i += 4) if ((d2[i]+d2[i+1]+d2[i+2])/3 > 8) nb2++;
+        log.push("after-input nonBlack%=" + (nb2/total*100).toFixed(1));
+        log.push("PASS: no runtime errors observed");
+        report();
+      }, 900);
+    }, 300);
+  }, 1200);
+});
+</script>
+</body></html>

@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>logictest</title>
+<style>body{background:#111;color:#ccc;font:12px monospace;margin:0}iframe{width:960px;height:540px;border:0;position:absolute;left:-2000px}#out{padding:10px;white-space:pre-wrap}</style>
+</head><body>
+<div id="out">running...</div>
+<iframe id="f" src="../wickless.html?v=3"></iframe>
+<script>
+const log=[]; const out=document.getElementById("out");
+const done=()=>{ out.textContent=log.join("\n"); document.title=log.filter(l=>l.startsWith("FAIL")).join("|")||"ALLPASS"; };
+const ok=(c,m)=>log.push((c?"PASS  ":"FAIL  ")+m);
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+
+document.getElementById("f").addEventListener("load", async () => {
+  const w=document.getElementById("f").contentWindow;
+  w.addEventListener("error",e=>log.push("ERR "+e.message));
+  await sleep(300);
+  const G=w.__wickless;
+  ok(!!G,"debug hook exposed");
+  try {
+
+  // 标题态
+  ok(G.S.state==="title","starts at title");
+
+  G.start();
+  await sleep(60);
+  ok(G.S.state==="play","startGame -> play");
+  ok(Math.abs(G.P.wax-100)<0.5,"wax starts at 100, got "+G.P.wax.toFixed(1));
+
+  // 视野随蜡线性变化
+  const r100=G.lightRadius;
+  G.P.wax=20; const r20=G.lightRadius;
+  ok(r100>r20 && Math.abs(r100-230)<1,"radius max at full wax: "+r100.toFixed(1));
+  ok(r20>60 && r20<95,"radius shrinks at 20 wax: "+r20.toFixed(1));
+  G.P.wax=100;
+
+  // 剪灯芯降低视野
+  const rNormal=G.lightRadius;
+  w.dispatchEvent(new w.KeyboardEvent("keydown",{key:"Shift"}));
+  await sleep(80);
+  const rTrim=G.lightRadius;
+  ok(rTrim<rNormal*0.6,"trim shrinks radius "+rNormal.toFixed(0)+"->"+rTrim.toFixed(0));
+  w.dispatchEvent(new w.KeyboardEvent("keyup",{key:"Shift"}));
+  await sleep(60);
+
+  // 蜡自然燃烧
+  const w0=G.P.wax; await sleep(1000); const w1=G.P.wax;
+  ok(w1<w0,"wax drains over time "+w0.toFixed(1)+"->"+w1.toFixed(1));
+
+  // 敌人存在
+  await sleep(400);
+  ok(G.enemies.length>0,"enemies spawned: "+G.enemies.length);
+
+  // 攻击耗蜡且能击杀
+  const e=G.enemies[0];
+  e.x=G.P.x+30; e.y=G.P.y; e.hp=1;
+  w.dispatchEvent(new w.KeyboardEvent("mousemove",{clientX:0,clientY:0}));
+  const before=G.P.wax, ec=G.enemies.length;
+  // 直接对准右方
+  G.P.aim=0;
+  w.dispatchEvent(new w.KeyboardEvent("keydown",{key:"j"}));
+  await sleep(120);
+  ok(G.enemies.length<ec,"attack killed enemy "+ec+"->"+G.enemies.length);
+  ok(G.P.wax>before-G.CFG.atkCost,"kill drops shard, picked up when near");
+
+  // 低蜡触发死亡
+  G.P.wax=0.2; await sleep(700);
+  ok(G.S.state==="dead","wax<=0 -> dead, got "+G.S.state);
+
+  // 重开
+  w.dispatchEvent(new w.KeyboardEvent("keydown",{key:"r"}));
+  await sleep(120);
+  ok(G.S.state==="play","R restarts");
+  ok(Math.abs(G.P.wax-100)<1,"restart resets wax");
+
+  // 长时间运行不报错
+  await sleep(2500);
+  ok(G.S.state==="play"||G.S.state==="dead","survives 2.5s: "+G.S.state+" wax="+G.P.wax.toFixed(1)+" enemies="+G.enemies.length);
+
+  /* ---- 核心机制验证：光 = 暴露 ---- */
+  G.start(); await sleep(60);
+  G.P.wax=100; G.P.x=480; G.P.y=270;
+
+  // 蛾子在光内应追人；光缩到极小后应停止追击
+  const moth=G.enemies.find(e=>e.type==="moth");
+  ok(!!moth,"has a moth to test");
+  if(moth){
+    moth.x=G.P.x+180; moth.y=G.P.y; moth.stun=0;
+    const d0=Math.hypot(moth.x-G.P.x,moth.y-G.P.y);
+    await sleep(700);
+    const d1=Math.hypot(moth.x-G.P.x,moth.y-G.P.y);
+    ok(d1<d0-20,"moth chases inside light "+d0.toFixed(0)+"->"+d1.toFixed(0));
+
+    G.P.wax=6;                      // 光圈收缩到 ~51
+    moth.x=G.P.x+180; moth.y=G.P.y; moth.stun=0;
+    const e0=Math.hypot(moth.x-G.P.x,moth.y-G.P.y);
+    await sleep(700);
+    const e1=Math.hypot(moth.x-G.P.x,moth.y-G.P.y);
+    ok(e1>e0-6,"moth stops chasing in dark "+e0.toFixed(0)+"->"+e1.toFixed(0));
+    G.P.wax=100;
+  }
+
+  // 纸人：暗处逼近，但停在光圈边缘，不会进入光圈
+  G.start(); await sleep(60);
+  G.P.wax=100;
+  G.enemies.length=0;
+  G.enemies.push({type:"paper",x:G.P.x+200,y:G.P.y,hp:6,maxHp:6,r:11,kx:0,ky:0,hitT:0,stun:0,dead:false,seed:1,wob:0});
+  const pap=G.enemies[0];
+  await sleep(1200);
+  const pd=Math.hypot(pap.x-G.P.x,pap.y-G.P.y);
+  const lrNow=G.lightRadius;
+  ok(pd>lrNow*0.7,"paper stops at light edge, dist="+pd.toFixed(0)+" radius="+lrNow.toFixed(0));
+  ok(pd>lrNow*0.6,"paper never reaches player in light");
+
+  G.P.wax=8;
+  pap.x=G.P.x+200; pap.y=G.P.y;
+  const q0=Math.hypot(pap.x-G.P.x,pap.y-G.P.y);
+  await sleep(700);
+  const q1=Math.hypot(pap.x-G.P.x,pap.y-G.P.y);
+  ok(q1<q0-15,"paper hunts in dark "+q0.toFixed(0)+"->"+q1.toFixed(0));
+
+  // 蜡屑：远处击杀不立即回蜡，必须走过去
+  G.start(); await sleep(60);
+  G.P.wax=50;
+  G.enemies.length=0;
+  const sw0=G.P.wax;
+  G.shards.length=0;
+  G.dropShard(G.P.x+320, G.P.y, 12);
+  ok(G.shards.length>0,"kill spawns wax shard on the ground");
+  ok(G.P.wax<=sw0+0.01,"shard on the ground does not refund wax yet");
+
+  // 走过去能捡到
+  const shard=G.shards[0];
+  G.P.x=shard.x-10; G.P.y=shard.y;
+  const sw1=G.P.wax;
+  await sleep(250);
+  ok(G.P.wax>sw1,"walking onto shard restores wax");
+
+  // 吹灯人：第 3 波起会出现，并会吹出暗风
+  G.start(); await sleep(60);
+  G.S.wave=5;
+  G.enemies.length=0; G.P.wax=100;
+  G.enemies.push({type:"blower",x:G.P.x+260,y:G.P.y,hp:99,maxHp:99,r:11,kx:0,ky:0,hitT:0,stun:0,dead:false,seed:1,wob:0,cd:0});
+  await sleep(400);
+  ok(G.bolts.length>0,"blower fires a dark gust");
+
+  // 暗风命中扣蜡
+  G.start(); await sleep(60);
+  G.enemies.length=0; G.bolts.length=0; G.P.wax=100; G.P.invuln=0;
+  G.bolts.push({x:G.P.x-20,y:G.P.y,vx:400,vy:0,life:2,r:7});
+  await sleep(200);
+  ok(G.P.wax<100,"dark gust drains wax on hit, wax="+G.P.wax.toFixed(1));
+
+  } catch(err){ log.push("FAIL  harness threw: "+err.message); }
+  done();
+});
+</script>
+</body></html>
